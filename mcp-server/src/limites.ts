@@ -3,8 +3,11 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { config } from "./config.js";
 
-const HORA_MS = 60 * 60 * 1000;
+const MINUTO_MS = 60 * 1000;
+const HORA_MS = 60 * MINUTO_MS;
 const DIA_MS = 24 * HORA_MS;
+
+const dormir = (ms: number) => new Promise((listo) => setTimeout(listo, ms));
 
 export class LimiteAlcanzado extends Error {
   constructor(message: string) {
@@ -14,9 +17,9 @@ export class LimiteAlcanzado extends Error {
 }
 
 type Registro = { ts: number; numero: string; nuevo: boolean };
-type Estado = { envios: Registro[]; conocidos: string[] };
+type Estado = { envios: Registro[]; conocidos: string[]; verificaciones: number[] };
 
-const VACIO: Estado = { envios: [], conocidos: [] };
+const VACIO: Estado = { envios: [], conocidos: [], verificaciones: [] };
 
 /**
  * Aplica los topes de envío y espacia los mensajes.
@@ -28,7 +31,10 @@ const VACIO: Estado = { envios: [], conocidos: [] };
  */
 export class ControlDeEnvios {
   private estado: Estado | null = null;
+  // Colas separadas: una tanda larga de verificaciones no debe trabar un
+  // mensaje que quieras mandar mientras tanto.
   private cola: Promise<unknown> = Promise.resolve();
+  private colaVerificaciones: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly archivo = path.join(config.dataDir, "envios.json")) {}
 
@@ -40,6 +46,7 @@ export class ControlDeEnvios {
       this.estado = {
         envios: Array.isArray(leido.envios) ? leido.envios : [],
         conocidos: Array.isArray(leido.conocidos) ? leido.conocidos : [],
+        verificaciones: Array.isArray(leido.verificaciones) ? leido.verificaciones : [],
       };
     } catch {
       // Primera corrida, o archivo ilegible: arrancamos de cero en vez de
@@ -59,12 +66,13 @@ export class ControlDeEnvios {
 
   private podar(estado: Estado, ahora: number): void {
     estado.envios = estado.envios.filter((e) => ahora - e.ts < DIA_MS);
+    estado.verificaciones = estado.verificaciones.filter((ts) => ahora - ts < DIA_MS);
   }
 
-  private encolar<T>(tarea: () => Promise<T>): Promise<T> {
-    const siguiente = this.cola.then(tarea, tarea);
+  private encolar<T>(tarea: () => Promise<T>, cual: "cola" | "colaVerificaciones" = "cola"): Promise<T> {
+    const siguiente = this[cual].then(tarea, tarea);
     // La cola nunca se rompe por un envío fallido: el próximo igual corre.
-    this.cola = siguiente.then(
+    this[cual] = siguiente.then(
       () => undefined,
       () => undefined,
     );
@@ -123,10 +131,58 @@ export class ControlDeEnvios {
     });
   }
 
+  /**
+   * Corre una consulta de "¿este número tiene WhatsApp?" respetando su propio
+   * freno. A diferencia de un envío, acá esperar es mejor que fallar: en una
+   * tanda larga se frena sola hasta que se libera cupo del minuto, y solo
+   * corta si se agotó el cupo del día.
+   */
+  async conPermisoVerificacion<T>(accion: () => Promise<T>): Promise<T> {
+    return this.encolar(async () => {
+      const estado = await this.cargar();
+      this.podar(estado, Date.now());
+
+      if (estado.verificaciones.length >= config.limites.verificacionPorDia) {
+        throw new LimiteAlcanzado(
+          `Tope diario de verificaciones alcanzado ` +
+            `(${estado.verificaciones.length}/${config.limites.verificacionPorDia}). ` +
+            `${describirEspera(
+              estado.verificaciones.map((ts) => ({ ts, numero: "", nuevo: false })),
+              Date.now(),
+              DIA_MS,
+            )}`,
+        );
+      }
+
+      // Esperamos a que se libere cupo del minuto en vez de fallar.
+      for (;;) {
+        const ahora = Date.now();
+        const enElMinuto = estado.verificaciones.filter((ts) => ahora - ts < MINUTO_MS);
+        if (enElMinuto.length < config.limites.verificacionPorMinuto) break;
+        const masViejo = Math.min(...enElMinuto);
+        await dormir(Math.max(250, masViejo + MINUTO_MS - ahora + 100));
+      }
+
+      await dormir(
+        randomInt(
+          config.limites.verificacionRetardoMinMs,
+          config.limites.verificacionRetardoMaxMs + 1,
+        ),
+      );
+      const resultado = await accion();
+
+      estado.verificaciones.push(Date.now());
+      await this.guardar(estado);
+      return resultado;
+    }, "colaVerificaciones");
+  }
+
   async resumen(): Promise<{
     ultimaHora: number;
     ultimoDia: number;
     nuevosUltimoDia: number;
+    verificacionesUltimoDia: number;
+    restanVerificaciones: number;
     restanHora: number;
     restanDia: number;
     restanNuevos: number;
@@ -145,6 +201,11 @@ export class ControlDeEnvios {
       ultimaHora,
       ultimoDia,
       nuevosUltimoDia,
+      verificacionesUltimoDia: estado.verificaciones.length,
+      restanVerificaciones: Math.max(
+        0,
+        config.limites.verificacionPorDia - estado.verificaciones.length,
+      ),
       restanHora: Math.max(0, config.limites.porHora - ultimaHora),
       restanDia: Math.max(0, config.limites.porDia - ultimoDia),
       restanNuevos: Math.max(0, config.limites.nuevosPorDia - nuevosUltimoDia),

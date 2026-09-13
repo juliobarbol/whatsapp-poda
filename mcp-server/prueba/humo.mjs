@@ -21,6 +21,12 @@ const servidorMcp = path.join(aca, "..", "dist", "index.js");
 
 const CLAVE = "clave-de-prueba";
 let enviados = [];
+let consultados = [];
+
+// Los únicos números que "tienen WhatsApp" en este WAHA falso. El segundo
+// existe solo en su forma con el 9, que es lo que ejercita la corrección
+// automática de números argentinos publicados sin él.
+const CON_WHATSAPP = new Set(["5491122334455", "5493514567890"]);
 
 // --- WAHA falso ---------------------------------------------------------------
 
@@ -60,8 +66,15 @@ const waha = http.createServer(async (req, res) => {
     case "POST /api/sendText":
       enviados.push(cuerpo);
       return responder({ id: `msg-${enviados.length}`, timestamp: Date.now() / 1000 });
-    case "GET /api/contacts/check-exists":
-      return responder({ numberExists: true, chatId: `${url.searchParams.get("phone")}@c.us` });
+    case "GET /api/contacts/check-exists": {
+      const telefono = url.searchParams.get("phone");
+      consultados.push(telefono);
+      return responder(
+        CON_WHATSAPP.has(telefono)
+          ? { numberExists: true, chatId: `${telefono}@c.us` }
+          : { numberExists: false },
+      );
+    }
     default:
       return responder({ error: `sin ruta para ${req.method} ${url.pathname}` }, 404);
   }
@@ -85,6 +98,9 @@ const mcp = spawn(process.execPath, [servidorMcp], {
     LIMITE_POR_HORA: "2",
     LIMITE_POR_DIA: "50",
     LIMITE_NUEVOS_POR_DIA: "50",
+    VERIFICACION_RETARDO_MIN_MS: "0",
+    VERIFICACION_RETARDO_MAX_MS: "1",
+    LIMITE_VERIFICACION_POR_TANDA: "4",
   },
   stdio: ["pipe", "pipe", "inherit"],
 });
@@ -160,6 +176,7 @@ await caso("expone todas las herramientas", async () => {
     "listar_numeros",
     "marcar_leido",
     "verificar_numero",
+    "verificar_numeros_en_tanda",
     "vincular_numero",
   ];
   assert.deepEqual(nombres, esperadas);
@@ -205,11 +222,61 @@ await caso("avisa cuando la sesión no existe", async () => {
   assert.match(texto, /No existe la sesión "fantasma"/);
 });
 
-await caso("verificar_numero no gasta cupo", async () => {
-  const { texto } = await llamar("verificar_numero", { telefono: "5491133224455" });
-  assert.match(texto, /tiene WhatsApp/);
+await caso("verificar_numero no gasta cupo de envío", async () => {
+  const { texto } = await llamar("verificar_numero", { telefono: "5491122334455" });
+  assert.match(texto, /5491122334455 tiene WhatsApp/);
   const cupo = await llamar("estado_limites");
-  assert.match(cupo.texto, /Última hora:  2\/2/);
+  assert.match(cupo.texto, /Última hora:  2\/2/, "verificar no debería sumar envíos");
+  assert.match(cupo.texto, /Verificaciones en 24 h: 1\//);
+});
+
+await caso("verificar_numero le agrega el 9 a un argentino que no lo trae", async () => {
+  consultados = [];
+  const { texto } = await llamar("verificar_numero", { telefono: "543514567890" });
+  assert.match(texto, /5493514567890 tiene WhatsApp/);
+  assert.match(texto, /le agregué el 9/);
+  assert.deepEqual(consultados, ["543514567890", "5493514567890"], "debe probar las dos formas");
+});
+
+await caso("la tanda clasifica, corrige y descarta repetidos", async () => {
+  const { texto } = await llamar("verificar_numeros_en_tanda", {
+    contactos: [
+      "Marcelo — +54 9 11 2233-4455",
+      "Vivero Los Álamos: +54 351 456-7890",
+      "Municipalidad de La Falda: 543548421234",
+      "Marcelo de nuevo — 5491122334455",
+      "Sucursal Centro 2",
+      "1122-3344",
+    ],
+  });
+  assert.match(texto, /Revisé 3 número\(s\)/, "el repetido no debería contarse");
+  assert.match(texto, /CON WHATSAPP \(1\)[\s\S]*Marcelo — 5491122334455/);
+  assert.match(texto, /CORREGIDOS \(1\)[\s\S]*Vivero Los Álamos — 5493514567890 \(pasaste 543514567890\)/);
+  assert.match(texto, /SIN WHATSAPP \(1\)[\s\S]*Municipalidad de La Falda — 543548421234/);
+  assert.match(texto, /NO PUDE REVISAR \(2\)/);
+  assert.match(texto, /Sucursal Centro 2 — no encontré un número acá/);
+  assert.match(texto, /le falta el código de país/);
+});
+
+await caso("la tanda recuerda el tope de contactos nuevos", async () => {
+  const { texto } = await llamar("verificar_numeros_en_tanda", { contactos: ["5491122334455"] });
+  assert.match(texto, /el tope de contactos nuevos sigue en 50 por día/);
+});
+
+await caso("la tanda corta al pasarse del máximo por llamada", async () => {
+  const { texto } = await llamar("verificar_numeros_en_tanda", {
+    contactos: [
+      "Uno: 543511111111",
+      "Dos: 543512222222",
+      "Tres: 543513333333",
+      "Cuatro: 543514444444",
+      "Cinco: 543515555555",
+      "Seis: 543516666666",
+    ],
+  });
+  assert.match(texto, /Revisé 4 número\(s\)/);
+  assert.match(texto, /Cinco — no lo revisé: la tanda corta en 4 números/);
+  assert.match(texto, /Seis — no lo revisé/);
 });
 
 await caso("el contador de envíos persiste en disco", async () => {

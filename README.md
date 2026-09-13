@@ -120,6 +120,7 @@ lo que dispara las detecciones.
 | `leer_mensajes` | Leer un chat |
 | `marcar_leido` | Poner en visto |
 | `verificar_numero` | Ver si un número tiene WhatsApp (no gasta cupo) |
+| `verificar_numeros_en_tanda` | Limpiar una lista de leads de una sola vez |
 | `buscar_contacto` | Buscar en la agenda por nombre o número |
 | `estado_limites` | Ver cuánto cupo de envío queda |
 
@@ -138,6 +139,38 @@ Siempre con código de país y sin `+`. Para Argentina va el **9** después del 
 
 Si tenés dudas con un número, `verificar_numero` te dice si existe sin mandarle nada.
 
+## Limpiar una lista de leads
+
+Pegale la columna de contactos de la planilla y decile **"verificá estos números"**.
+Acepta las líneas como salen, con nombre y todo:
+
+```
+Vivero Los Álamos: +54 351 456-7890
+Municipalidad de La Falda — 543548421234
+Marcelo 5491122334455
+```
+
+Te los devuelve en cuatro grupos:
+
+- **Con WhatsApp** — listos para escribir.
+- **Corregidos** — tenían WhatsApp pero recién con el 9 agregado. Actualizá el número
+  en la planilla: el que tenías no abre chat.
+- **Sin WhatsApp** — probablemente fijos. Para estos, llamar o buscar el celular en Instagram.
+- **No pude revisar** — sin código de país, o sin número reconocible en la línea.
+
+El grupo "corregidos" es el que más sirve: Google Maps y los directorios publican los
+celulares argentinos **sin el 9**, y así escritos WhatsApp responde "no existe", igual
+que un fijo. La tanda prueba las dos formas antes de descartar un contacto, así que
+recupera leads que en la planilla figuraban como "verificar".
+
+Verificar **no gasta cupo de envío** y no le avisa nada al contacto. Pero tiene su propio
+freno, porque consultar muchos números seguidos también es señal de automatización:
+20 por minuto, 300 por día, 50 por tanda, con una espera al azar entre cada uno. Una
+tanda de 50 tarda un par de minutos; es a propósito.
+
+Y lo obvio, que conviene decir igual: tener 40 números validados no habilita a escribirles
+a los 40. El tope de contactos nuevos sigue mandando.
+
 ## Los límites de envío
 
 Vienen así en `.env.example`:
@@ -146,8 +179,15 @@ Vienen así en `.env.example`:
 |---|---|---|
 | `LIMITE_POR_HORA` | 20 | Mensajes en las últimas 60 min |
 | `LIMITE_POR_DIA` | 100 | Mensajes en las últimas 24 h |
-| `LIMITE_NUEVOS_POR_DIA` | 20 | Contactos a los que nunca les escribiste, en 24 h |
+| `LIMITE_NUEVOS_POR_DIA` | 3 | Contactos a los que nunca les escribiste, en 24 h |
 | `RETARDO_MIN_MS` / `RETARDO_MAX_MS` | 8000 / 25000 | Espera al azar antes de cada envío |
+| `LIMITE_VERIFICACION_POR_MINUTO` | 20 | Consultas de "¿tiene WhatsApp?" por minuto |
+| `LIMITE_VERIFICACION_POR_DIA` | 300 | Íd., en 24 h |
+| `LIMITE_VERIFICACION_POR_TANDA` | 50 | Números por llamada a la tanda |
+
+El tope de contactos nuevos está en **3** porque tu regla de outreach es 1–2 mensajes en
+frío por día y esta cuenta ya tuvo una restricción. Los otros topes son más holgados
+porque cubren conversaciones en curso, que es tráfico normal.
 
 Las ventanas son **móviles**: cuentan hacia atrás desde ahora, no desde medianoche.
 Es lo que mira WhatsApp para decidir si un número se porta raro.
@@ -194,8 +234,8 @@ docker-compose.yml       WAHA, escuchando solo en localhost
 mcp-server/
   src/config.ts          Lee el .env y valida los límites
   src/waha.ts            Cliente HTTP de WAHA y normalización de números
-  src/limites.ts         Topes de envío, espera al azar y contador persistente
-  src/index.ts           Las 13 herramientas MCP
+  src/limites.ts         Topes de envío y verificación, esperas y contador persistente
+  src/index.ts           Las 14 herramientas MCP
   prueba/humo.mjs        Prueba de humo contra un WAHA simulado
 datos/                   Sesiones de WhatsApp y contador (nunca al repo)
 ```

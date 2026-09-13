@@ -9,6 +9,8 @@ import {
   ErrorWaha,
   normalizarChatId,
   numeroDe,
+  separarEtiquetaYNumero,
+  variantesDelNumero,
   type ChatWaha,
   type MensajeWaha,
   type SesionWaha,
@@ -412,12 +414,118 @@ herramienta(
       throw new ErrorWaha(`"${args.telefono}" no parece un número completo. Incluí el código de país.`);
     }
     await exigirActiva(sesion);
-    const resultado = await waha.verificarNumero(sesion, telefono);
+    const hallazgo = await verificarConVariantes(sesion, telefono);
+    if (!hallazgo) return texto(`${telefono} NO tiene WhatsApp (puede ser un fijo).`);
     return texto(
-      resultado.numberExists
-        ? `${telefono} tiene WhatsApp. chatId: ${resultado.chatId ?? `${telefono}@c.us`}`
-        : `${telefono} NO tiene WhatsApp.`,
+      `${hallazgo.numero} tiene WhatsApp. chatId: ${hallazgo.chatId}` +
+        (hallazgo.corregido ? `\nOjo: el número que pasaste no funcionaba; le agregué el 9 de Argentina.` : ""),
     );
+  },
+);
+
+herramienta(
+  "verificar_numeros_en_tanda",
+  {
+    title: "Verificar una lista de números",
+    description:
+      "Revisa una lista de contactos y dice cuáles tienen WhatsApp, sin mandarles nada. " +
+      "Pensado para limpiar una planilla de leads antes de escribir: acepta líneas pegadas de una " +
+      "columna, tipo 'Vivero Los Álamos: +54 351 456-7890'. " +
+      "A los números argentinos que fallan les prueba también la forma con el 9, que es como los " +
+      "publica Google Maps. Va despacio a propósito y no gasta cupo de envío.",
+    inputSchema: {
+      contactos: z
+        .array(z.string().min(3))
+        .min(1)
+        .describe(
+          "Una entrada por contacto. Puede ser el número solo o 'Nombre: número'. " +
+            "Los repetidos se descartan.",
+        ),
+      sesion: sesionOpcional,
+    },
+  },
+  async (args) => {
+    const sesion = sesionDe(args);
+    await exigirActiva(sesion);
+
+    const conWhatsapp: string[] = [];
+    const corregidos: string[] = [];
+    const sinWhatsapp: string[] = [];
+    const invalidos: string[] = [];
+    // `vistos` solo sirve para no repetir contactos; los efectivamente
+    // consultados se cuentan aparte, porque el tope por tanda deja algunos afuera.
+    const vistos = new Set<string>();
+    let revisados = 0;
+
+    for (const entrada of args.contactos) {
+      const partido = separarEtiquetaYNumero(entrada);
+      if (!partido) {
+        invalidos.push(`${entrada.trim()} — no encontré un número acá`);
+        continue;
+      }
+      const { etiqueta, digitos } = partido;
+      const nombre = etiqueta || digitos;
+
+      if (digitos.length < 10) {
+        invalidos.push(`${nombre} (${digitos}) — le falta el código de país`);
+        continue;
+      }
+      if (vistos.has(digitos)) continue;
+      vistos.add(digitos);
+
+      if (revisados >= config.limites.verificacionPorTanda) {
+        invalidos.push(
+          `${nombre} — no lo revisé: la tanda corta en ${config.limites.verificacionPorTanda} números. ` +
+            `Mandá el resto en otra tanda.`,
+        );
+        continue;
+      }
+
+      const hallazgo = await verificarConVariantes(sesion, digitos);
+      revisados++;
+      if (!hallazgo) {
+        sinWhatsapp.push(`${nombre} — ${digitos}`);
+      } else if (hallazgo.corregido) {
+        corregidos.push(`${nombre} — ${hallazgo.numero} (pasaste ${digitos})`);
+      } else {
+        conWhatsapp.push(`${nombre} — ${hallazgo.numero}`);
+      }
+    }
+
+    const cupo = await control.resumen();
+    const partes: string[] = [
+      `Revisé ${revisados} número(s): ` +
+        `${conWhatsapp.length + corregidos.length} con WhatsApp, ${sinWhatsapp.length} sin, ` +
+        `${invalidos.length} con problemas.`,
+    ];
+
+    if (conWhatsapp.length > 0) {
+      partes.push(`\nCON WHATSAPP (${conWhatsapp.length}) — listos para escribir:\n${lista(conWhatsapp)}`);
+    }
+    if (corregidos.length > 0) {
+      partes.push(
+        `\nCORREGIDOS (${corregidos.length}) — tienen WhatsApp con el 9 agregado.\n` +
+          `Actualizá el número en la planilla, el viejo no abre chat:\n${lista(corregidos)}`,
+      );
+    }
+    if (sinWhatsapp.length > 0) {
+      partes.push(
+        `\nSIN WHATSAPP (${sinWhatsapp.length}) — probablemente fijos.\n` +
+          `Para estos conviene llamar o buscar el celular en Instagram:\n${lista(sinWhatsapp)}`,
+      );
+    }
+    if (invalidos.length > 0) {
+      partes.push(`\nNO PUDE REVISAR (${invalidos.length}):\n${lista(invalidos)}`);
+    }
+
+    partes.push(
+      `\nQuedan ${cupo.restanVerificaciones} verificaciones hoy.\n` +
+        `Tener el número validado no es lo mismo que poder escribirle a todos: ` +
+        `el tope de contactos nuevos sigue en ${cupo.limites.nuevosPorDia} por día, ` +
+        `y hoy quedan ${cupo.restanNuevos}.`,
+    );
+
+    return texto(partes.join("\n"));
   },
 );
 
@@ -473,6 +581,7 @@ herramienta(
         `Última hora:  ${r.ultimaHora}/${r.limites.porHora} enviados — quedan ${r.restanHora}`,
         `Últimas 24 h: ${r.ultimoDia}/${r.limites.porDia} enviados — quedan ${r.restanDia}`,
         `Contactos nuevos en 24 h: ${r.nuevosUltimoDia}/${r.limites.nuevosPorDia} — quedan ${r.restanNuevos}`,
+        `Verificaciones en 24 h: ${r.verificacionesUltimoDia}/${r.limites.verificacionPorDia} — quedan ${r.restanVerificaciones}`,
         `Espera entre envíos: ${r.limites.retardoMinMs / 1000}–${r.limites.retardoMaxMs / 1000} s al azar`,
         `Números a los que ya les escribiste alguna vez: ${r.contactosConocidos}`,
         "",
@@ -482,6 +591,32 @@ herramienta(
     );
   },
 );
+
+// --- Auxiliares ---------------------------------------------------------------
+
+/**
+ * Consulta si un número tiene WhatsApp, probando también la forma argentina
+ * con el 9 si la primera no da. Devuelve null si ninguna variante existe.
+ */
+async function verificarConVariantes(
+  sesion: string,
+  digitos: string,
+): Promise<{ numero: string; chatId: string; corregido: boolean } | null> {
+  const variantes = variantesDelNumero(digitos);
+  for (const [indice, variante] of variantes.entries()) {
+    const respuesta = await control.conPermisoVerificacion(() => waha.verificarNumero(sesion, variante));
+    if (respuesta.numberExists) {
+      return {
+        numero: variante,
+        chatId: respuesta.chatId ?? `${variante}@c.us`,
+        corregido: indice > 0,
+      };
+    }
+  }
+  return null;
+}
+
+const lista = (renglones: string[]): string => renglones.map((r) => `  • ${r}`).join("\n");
 
 // --- Arranque -----------------------------------------------------------------
 

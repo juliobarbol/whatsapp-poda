@@ -45,10 +45,26 @@ export const config = {
   limites: {
     porHora: entero("LIMITE_POR_HORA", 20),
     porDia: entero("LIMITE_POR_DIA", 100),
-    nuevosPorDia: entero("LIMITE_NUEVOS_POR_DIA", 20),
+    // Bajo a propósito: el manual de outreach fija 1–2 mensajes en frío por
+    // día, y ya hubo una restricción de WhatsApp en esta cuenta.
+    nuevosPorDia: entero("LIMITE_NUEVOS_POR_DIA", 3),
     retardoMinMs,
     retardoMaxMs,
+    // Verificar no manda mensajes, pero consultar muchos números seguidos
+    // también es una señal de automatización, así que tiene su propio freno.
+    verificacionPorMinuto: entero("LIMITE_VERIFICACION_POR_MINUTO", 20),
+    verificacionPorDia: entero("LIMITE_VERIFICACION_POR_DIA", 300),
+    verificacionPorTanda: entero("LIMITE_VERIFICACION_POR_TANDA", 50),
+    verificacionRetardoMinMs: entero("VERIFICACION_RETARDO_MIN_MS", 1_000),
+    verificacionRetardoMaxMs: entero("VERIFICACION_RETARDO_MAX_MS", 3_000),
   },
 } as const;
+
+if (config.limites.verificacionRetardoMinMs > config.limites.verificacionRetardoMaxMs) {
+  throw new Error(
+    `VERIFICACION_RETARDO_MIN_MS (${config.limites.verificacionRetardoMinMs}) no puede ser mayor ` +
+      `que VERIFICACION_RETARDO_MAX_MS (${config.limites.verificacionRetardoMaxMs})`,
+  );
+}
 
 export type Config = typeof config;

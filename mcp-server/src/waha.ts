@@ -40,6 +40,37 @@ export function numeroDe(chatId: string): string {
   return chatId.split("@")[0] ?? chatId;
 }
 
+/**
+ * Formas alternativas de un mismo número argentino, para probar en orden.
+ *
+ * En Argentina WhatsApp usa 54 + 9 + área + número, pero los directorios y
+ * Google Maps publican el número sin ese 9. Un celular real escrito sin el 9
+ * da "no existe", que es indistinguible de un fijo: por eso probamos las dos
+ * formas antes de descartar un contacto.
+ */
+export function variantesDelNumero(digitos: string): string[] {
+  if (!digitos.startsWith("54")) return [digitos];
+  const resto = digitos.slice(2);
+  if (resto.startsWith("9")) return [digitos, `54${resto.slice(1)}`];
+  return [digitos, `549${resto}`];
+}
+
+/**
+ * Separa una línea de planilla en etiqueta y número.
+ *
+ * Acepta "Vivero Los Álamos: +54 351 456-7890", "Marcelo — 5491122334455" o
+ * el número pelado. Busca la corrida que parece teléfono en vez de juntar
+ * todos los dígitos, para que un nombre con número ("Depósito 2") no ensucie.
+ */
+export function separarEtiquetaYNumero(entrada: string): { etiqueta: string; digitos: string } | null {
+  const encontrado = entrada.match(/\+?\d[\d\s().\-/]{7,}\d/);
+  if (!encontrado) return null;
+  const digitos = encontrado[0].replace(/\D/g, "");
+  if (digitos.length < 8) return null;
+  const etiqueta = entrada.replace(encontrado[0], "").replace(/[\s,;:—–\-|]+$/u, "").trim();
+  return { etiqueta, digitos };
+}
+
 type Peticion = {
   metodo?: "GET" | "POST" | "PUT" | "DELETE";
   cuerpo?: unknown;
