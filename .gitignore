@@ -1,0 +1,7 @@
+.env
+node_modules/
+dist/
+
+# Sesiones de WhatsApp y contador de envíos. Nunca al repo:
+# las credenciales de sesión dan acceso completo a la cuenta.
+datos/

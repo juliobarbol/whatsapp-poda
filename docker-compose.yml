@@ -1,0 +1,30 @@
+services:
+  waha:
+    image: devlikeapro/waha:latest
+    container_name: waha-poda
+    restart: unless-stopped
+    ports:
+      # Solo accesible desde la propia máquina. Si lo exponés a internet,
+      # poné un reverse proxy con HTTPS delante.
+      - "127.0.0.1:3000:3000"
+    environment:
+      WHATSAPP_API_KEY: ${WAHA_API_KEY:?falta WAHA_API_KEY en .env}
+      WHATSAPP_DEFAULT_ENGINE: ${WAHA_ENGINE:-NOWEB}
+      # Levanta de nuevo las sesiones vinculadas si se reinicia el contenedor.
+      WHATSAPP_RESTART_ALL_SESSIONS: "True"
+      # Guarda chats y contactos en disco: sin esto, listar_chats y
+      # buscar_contacto vuelven vacíos con el motor NOWEB.
+      WAHA_NOWEB_STORE_ENABLED: "True"
+      WAHA_NOWEB_STORE_FULLSYNC: "True"
+      WAHA_PRINT_QR: "False"
+      TZ: ${TZ:-America/Argentina/Buenos_Aires}
+    volumes:
+      # Acá viven las credenciales de las sesiones vinculadas.
+      # Si borrás esta carpeta, hay que volver a escanear el QR.
+      - ./datos/waha:/app/.sessions
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
